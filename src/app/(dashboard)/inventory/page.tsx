@@ -3,7 +3,8 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '@/lib/indexeddb/db';
 import { supabase } from '@/lib/supabase/client';
-import { FileText, Plus, Minus, Download, Check, Save, RefreshCw } from 'lucide-react';
+import { useAuth } from '@/features/auth/useAuth';
+import { FileText, Plus, Minus, Download, Check, Save, RefreshCw, Trash2, ShieldAlert, PackagePlus } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -67,6 +68,8 @@ const OFFICIAL_CATALOG: InventoryItem[] = [
 ];
 
 export default function InventoryPage() {
+  const { isAdmin } = useAuth();
+
   const [selectedDate, setSelectedDate] = useState('2026-08-17');
   const [lastUpdateDate, setLastUpdateDate] = useState('17-08-2026');
   const [items, setItems] = useState<InventoryItem[]>(OFFICIAL_CATALOG);
@@ -75,6 +78,17 @@ export default function InventoryPage() {
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+
+  // Estados del Formulario Administrador para Agregar Producto
+  const [newCategory, setNewCategory] = useState<FamiliaContable>('PT_BITS');
+  const [newItemName, setNewItemName] = useState('');
+  const [newSapNumber, setNewSapNumber] = useState('');
+  const [newUm, setNewUm] = useState('UD');
+  const [newQuantity, setNewQuantity] = useState('0');
+  const [newHasSN, setNewHasSN] = useState(true);
+
+  // Estado para Quitar Producto (Dropdown Administrador)
+  const [selectedRemoveId, setSelectedRemoveId] = useState('');
 
   // Cargar primero desde IndexedDB y luego actualizar con la última versión de la nube en Supabase
   useEffect(() => {
@@ -116,10 +130,9 @@ export default function InventoryPage() {
             setLastUpdateDate(latest.last_update_date);
           }
           await db.appState.put({ key: 'familiaInventoryItems_v3', value: latest.items_data });
-          console.log('[Supabase Cloud Sync] Inventario actualizado desde el último registro en la nube.');
         }
       }
-    } catch (e) {
+    } catch {
       console.warn('[Supabase Offline] Sin conexión a internet, manteniendo datos locales.');
     } finally {
       setIsCloudSyncing(false);
@@ -152,7 +165,6 @@ export default function InventoryPage() {
     await saveInventoryState(items, false);
 
     try {
-      // 1. Insertar el nuevo registro con ID único basado en timestamp
       const uniqueSnapshotId = `inv-${Date.now()}`;
       const { error: insertError } = await supabase.from('inventory_snapshots').insert([
         {
@@ -160,17 +172,15 @@ export default function InventoryPage() {
           inventory_date: selectedDate,
           last_update_date: formattedDate,
           items_data: items,
-          updated_at: now.toISOString()
-        }
+          updated_at: now.toISOString(),
+        },
       ]);
 
       if (insertError) {
-        console.error('[Supabase Insert Error]:', insertError.message);
         setSaveFeedback(`Guardado localmente. Supabase: ${insertError.message}`);
       } else {
         setSaveFeedback('¡Inventario guardado y respaldado en Supabase (Nube)!');
 
-        // 2. Control de historial: Mantener máximo 5 registros en Supabase (eliminar los más antiguos)
         const { data: allSnapshots } = await supabase
           .from('inventory_snapshots')
           .select('id')
@@ -179,11 +189,9 @@ export default function InventoryPage() {
         if (allSnapshots && allSnapshots.length > 5) {
           const idsToDelete = allSnapshots.slice(5).map((row) => row.id);
           await supabase.from('inventory_snapshots').delete().in('id', idsToDelete);
-          console.log(`[Supabase Cleanup] Eliminados los ${idsToDelete.length} registros más antiguos. Mantenidos los 5 más recientes.`);
         }
       }
-    } catch (e: any) {
-      console.warn('[Supabase Catch]:', e);
+    } catch {
       setSaveFeedback('Guardado localmente en IndexedDB (Modo Offline)');
     }
 
@@ -200,6 +208,53 @@ export default function InventoryPage() {
       return item;
     });
     saveInventoryState(updated, false);
+  };
+
+  // Funciones Exclusivas de Administrador: AGREGAR PRODUCTO
+  const handleAddProductAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newItemName.trim() || !newSapNumber.trim()) {
+      alert('Por favor complete la descripción del artículo y el código SAP.');
+      return;
+    }
+
+    const newItem: InventoryItem = {
+      id: `custom-${Date.now()}`,
+      category: newCategory,
+      item: newItemName.trim(),
+      sapNumber: newSapNumber.trim(),
+      um: newUm.trim() || 'UD',
+      quantity: parseInt(newQuantity) || 0,
+      hasSN: newHasSN,
+    };
+
+    const updated = [...items, newItem];
+    await saveInventoryState(updated, false);
+
+    setSaveFeedback(`¡Producto "${newItem.item}" agregado al catálogo por Administrador!`);
+    setTimeout(() => setSaveFeedback(null), 4000);
+
+    // Resetear formulario
+    setNewItemName('');
+    setNewSapNumber('');
+    setNewQuantity('0');
+  };
+
+  // Funciones Exclusivas de Administrador: QUITAR PRODUCTO
+  const handleRemoveProductAdmin = async (itemId: string) => {
+    const targetItem = items.find((i) => i.id === itemId);
+    if (!targetItem) return;
+
+    if (!confirm(`¿Está seguro de eliminar el producto "${targetItem.item}" (${targetItem.sapNumber}) del inventario?`)) {
+      return;
+    }
+
+    const updated = items.filter((i) => i.id !== itemId);
+    await saveInventoryState(updated, false);
+
+    setSaveFeedback(`¡Producto "${targetItem.item}" eliminado del catálogo por Administrador!`);
+    setTimeout(() => setSaveFeedback(null), 4000);
+    setSelectedRemoveId('');
   };
 
   const handleSNModalOpen = (item: InventoryItem) => {
@@ -223,7 +278,6 @@ export default function InventoryPage() {
   const generatePDF = () => {
     const doc = new jsPDF();
 
-    // Encabezado DRILLCO
     doc.setFillColor(158, 27, 44); // #9E1B2C
     doc.rect(0, 0, 210, 28, 'F');
 
@@ -231,28 +285,19 @@ export default function InventoryPage() {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(20);
     doc.text('DRILLCO', 14, 18);
-    
-    // Título según especificación requerida: "Inventario de bodega"
+
     doc.setFontSize(13);
     doc.text('Inventario de bodega', 140, 18);
 
-    // Metadatos
     doc.setTextColor(30, 41, 59);
     doc.setFontSize(10);
     doc.setFont('helvetica', 'bold');
     doc.text(`Faena: Zaldívar - Chile`, 14, 36);
     doc.text(`Fecha de ultimo Inventario: ${lastUpdateDate}`, 14, 44);
 
-    // Preparar filas de la tabla SIN la columna N° de Serie (SN)
     const tableData: any[] = [];
     items.forEach((it) => {
-      tableData.push([
-        it.category,
-        it.item,
-        it.sapNumber,
-        it.um,
-        it.quantity.toString()
-      ]);
+      tableData.push([it.category, it.item, it.sapNumber, it.um, it.quantity.toString()]);
     });
 
     autoTable(doc, {
@@ -261,7 +306,7 @@ export default function InventoryPage() {
       body: tableData,
       theme: 'grid',
       headStyles: {
-        fillColor: [245, 158, 11], // Yellow #F59E0B
+        fillColor: [245, 158, 11],
         textColor: [0, 0, 0],
         fontStyle: 'bold',
         fontSize: 9,
@@ -279,7 +324,6 @@ export default function InventoryPage() {
       },
     });
 
-    // Pie de página oficial
     const pageCount = (doc as any).internal.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
@@ -306,7 +350,7 @@ export default function InventoryPage() {
   ];
 
   return (
-    <div className="space-y-6 max-w-6xl mx-auto">
+    <div className="space-y-6 max-w-6xl mx-auto pb-16">
       {/* Mensaje de Confirmación al Guardar */}
       {saveFeedback && (
         <div className="bg-emerald-50 border border-emerald-300 text-emerald-800 text-xs font-extrabold px-4 py-3 rounded-2xl flex items-center justify-between shadow-sm animate-fade-in">
@@ -333,7 +377,6 @@ export default function InventoryPage() {
           </div>
 
           <div className="flex items-center space-x-2">
-            {/* Botón Refrescar Nube Manual */}
             <button
               onClick={syncFromCloudLatest}
               disabled={isCloudSyncing}
@@ -343,7 +386,6 @@ export default function InventoryPage() {
               <RefreshCw className={`w-4 h-4 ${isCloudSyncing ? 'animate-spin text-[#9E1B2C]' : ''}`} />
             </button>
 
-            {/* Botón Guardar / Actualizar */}
             <button
               onClick={handleManualSave}
               disabled={isSaving}
@@ -353,7 +395,6 @@ export default function InventoryPage() {
               <span>{isSaving ? 'Guardando...' : 'Guardar'}</span>
             </button>
 
-            {/* Botón PDF */}
             <button
               onClick={generatePDF}
               className="border-2 border-emerald-600 hover:bg-emerald-50 text-emerald-600 font-extrabold px-4 py-2 rounded-xl flex items-center space-x-2 text-sm shadow-sm transition-all cursor-pointer"
@@ -364,7 +405,6 @@ export default function InventoryPage() {
           </div>
         </div>
 
-        {/* Línea de Acento Amarilla */}
         <div className="h-1 bg-amber-400 w-full rounded-full"></div>
 
         <div className="flex items-center justify-between text-xs text-slate-500 font-semibold pt-1">
@@ -394,6 +434,7 @@ export default function InventoryPage() {
                 <th className="py-3 px-3 w-14 text-center">UM</th>
                 <th className="py-3 px-4 w-36 text-center">Bod. Central</th>
                 <th className="py-3 px-4 w-16 text-center">SN</th>
+                {isAdmin && <th className="py-3 px-3 w-16 text-center">Quitar</th>}
               </tr>
             </thead>
             <tbody>
@@ -406,7 +447,6 @@ export default function InventoryPage() {
                     key={item.id}
                     className="border-b border-slate-200 hover:bg-slate-50 transition-colors"
                   >
-                    {/* Celda de FAMILIA CONTABLE combinada */}
                     {idx === 0 && (
                       <td
                         rowSpan={categoryItems.length}
@@ -416,16 +456,10 @@ export default function InventoryPage() {
                       </td>
                     )}
 
-                    {/* Nombre del Artículo */}
                     <td className="py-3 px-4 font-bold text-slate-800">{item.item}</td>
-
-                    {/* Código ARTICULO */}
                     <td className="py-3 px-4 font-mono font-semibold text-slate-700">{item.sapNumber}</td>
-
-                    {/* UM */}
                     <td className="py-3 px-3 font-semibold text-center text-slate-600">{item.um}</td>
 
-                    {/* Controles Bodega Central (+ / -) */}
                     <td className="py-2 px-3">
                       <div className="flex items-center justify-center space-x-1">
                         <button
@@ -455,7 +489,6 @@ export default function InventoryPage() {
                       </div>
                     </td>
 
-                    {/* Botón SN */}
                     <td className="py-2 px-3 text-center">
                       <button
                         type="button"
@@ -469,6 +502,20 @@ export default function InventoryPage() {
                         SN
                       </button>
                     </td>
+
+                    {/* Botón Eliminar Fila para Administradores */}
+                    {isAdmin && (
+                      <td className="py-2 px-3 text-center">
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveProductAdmin(item.id)}
+                          title="Quitar producto de la lista (Admin)"
+                          className="p-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg border border-red-200 transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ));
               })}
@@ -476,6 +523,176 @@ export default function InventoryPage() {
           </table>
         </div>
       </div>
+
+      {/* ========================================================================= */}
+      {/* SECCIÓN AL FINAL DE LA VENTANA: GESTIÓN DE CATÁLOGO (SOLO ADMINISTRADOR) */}
+      {/* ========================================================================= */}
+      {isAdmin ? (
+        <div className="bg-white rounded-3xl shadow-md border border-slate-200 p-6 sm:p-8 space-y-6">
+          <div className="flex items-center space-x-3 text-slate-900 border-b border-slate-200 pb-3">
+            <PackagePlus className="w-6 h-6 text-[#9E1B2C]" />
+            <div>
+              <h3 className="text-base font-extrabold uppercase">GESTIÓN DE PRODUCTOS EN CATÁLOGO</h3>
+              <p className="text-xs text-slate-500">Añadir nuevos ítems o eliminar productos existentes (Exclusivo Administrador)</p>
+            </div>
+          </div>
+
+          <div className="h-1 bg-amber-400 w-full rounded-full -mt-3"></div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {/* SUB-SECCIÓN 1: AGREGAR NUEVO PRODUCTO */}
+            <form onSubmit={handleAddProductAdmin} className="space-y-4 bg-slate-50/70 p-5 rounded-2xl border border-slate-200">
+              <h4 className="text-xs font-black uppercase text-slate-800 tracking-wider flex items-center space-x-2">
+                <Plus className="w-4 h-4 text-emerald-600" />
+                <span>Agregar Producto a la Lista</span>
+              </h4>
+
+              {/* Familia Contable */}
+              <div className="space-y-1">
+                <label className="block text-[11px] font-black uppercase text-slate-500">Familia Contable</label>
+                <select
+                  value={newCategory}
+                  onChange={(e) => setNewCategory(e.target.value as FamiliaContable)}
+                  className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-[#9E1B2C] focus:outline-none"
+                >
+                  <option value="PT_BITS">PT_BITS</option>
+                  <option value="PT_MART">PT_MART</option>
+                  <option value="PT_ROTARY">PT_ROTARY</option>
+                  <option value="PT_REP_TRICONOS">PT_REP_TRICONOS</option>
+                  <option value="PT_BARRAS">PT_BARRAS</option>
+                  <option value="PR_MATERIALES">PR_MATERIALES</option>
+                  <option value="PT_OTROS">PT_OTROS</option>
+                </select>
+              </div>
+
+              {/* Descripción del Artículo */}
+              <div className="space-y-1">
+                <label className="block text-[11px] font-black uppercase text-slate-500">Descripción del Artículo *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ej: Tricono 8 5/8 SGT V2"
+                  value={newItemName}
+                  onChange={(e) => setNewItemName(e.target.value)}
+                  className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-[#9E1B2C] focus:outline-none"
+                />
+              </div>
+
+              {/* Código SAP / Artículo */}
+              <div className="space-y-1">
+                <label className="block text-[11px] font-black uppercase text-slate-500">Código Artículo / N° SAP *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ej: 3021008580001"
+                  value={newSapNumber}
+                  onChange={(e) => setNewSapNumber(e.target.value)}
+                  className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-[#9E1B2C] focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                {/* UM */}
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-black uppercase text-slate-500">UM</label>
+                  <input
+                    type="text"
+                    value={newUm}
+                    onChange={(e) => setNewUm(e.target.value)}
+                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 uppercase focus:ring-2 focus:ring-[#9E1B2C] focus:outline-none"
+                  />
+                </div>
+
+                {/* Cantidad Inicial */}
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-black uppercase text-slate-500">Cantidad Inicial</label>
+                  <input
+                    type="number"
+                    value={newQuantity}
+                    onChange={(e) => setNewQuantity(e.target.value)}
+                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-[#9E1B2C] focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Checkbox SN */}
+              <div className="flex items-center space-x-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="chkHasSN"
+                  checked={newHasSN}
+                  onChange={(e) => setNewHasSN(e.target.checked)}
+                  className="w-4 h-4 text-[#9E1B2C] rounded focus:ring-[#9E1B2C]"
+                />
+                <label htmlFor="chkHasSN" className="text-xs font-bold text-slate-700 cursor-pointer">
+                  ¿Requiere registro de N° de Serie (SN)?
+                </label>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-2.5 px-4 rounded-xl flex items-center justify-center space-x-2 text-xs shadow-sm transition-all cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Agregar Producto al Catálogo</span>
+              </button>
+            </form>
+
+            {/* SUB-SECCIÓN 2: QUITAR PRODUCTO EXISTENTE */}
+            <div className="space-y-4 bg-slate-50/70 p-5 rounded-2xl border border-slate-200 flex flex-col justify-between">
+              <div className="space-y-3">
+                <h4 className="text-xs font-black uppercase text-slate-800 tracking-wider flex items-center space-x-2">
+                  <Trash2 className="w-4 h-4 text-red-600" />
+                  <span>Quitar Producto de la Lista</span>
+                </h4>
+
+                <p className="text-xs text-slate-600">
+                  Seleccione cualquier ítem registrado en el inventario para eliminarlo permanentemente del catálogo.
+                </p>
+
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-black uppercase text-slate-500">Seleccionar Producto a Quitar</label>
+                  <select
+                    value={selectedRemoveId}
+                    onChange={(e) => setSelectedRemoveId(e.target.value)}
+                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-[#9E1B2C] focus:outline-none"
+                  >
+                    <option value="">-- Seleccionar producto --</option>
+                    {items.map((it) => (
+                      <option key={it.id} value={it.id}>
+                        [{it.category}] {it.item} ({it.sapNumber})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={!selectedRemoveId}
+                onClick={() => handleRemoveProductAdmin(selectedRemoveId)}
+                className={`w-full py-2.5 px-4 rounded-xl font-extrabold text-xs flex items-center justify-center space-x-2 transition-all cursor-pointer ${
+                  selectedRemoveId
+                    ? 'bg-red-600 hover:bg-red-700 text-white shadow-sm'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Quitar Producto Seleccionado</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* Aviso discreto para cuentas operativas */
+        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex items-center justify-between text-xs text-slate-500">
+          <div className="flex items-center space-x-2">
+            <ShieldAlert className="w-4 h-4 text-slate-400" />
+            <span>La gestión de adición y eliminación de catálogo está reservada para cuentas de Administrador.</span>
+          </div>
+          <span className="font-bold text-slate-400 uppercase text-[10px]">DRILLCO® Security</span>
+        </div>
+      )}
 
       {/* Modal N° Serie (SN) */}
       {snModalItem && (
