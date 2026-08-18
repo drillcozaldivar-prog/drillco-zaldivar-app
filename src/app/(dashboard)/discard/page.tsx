@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { db } from '@/lib/indexeddb/db';
 import { supabase } from '@/lib/supabase/client';
-import { Trash2, Save, ArrowLeft, Check, Search, Calendar, Filter } from 'lucide-react';
+import { Trash2, Save, ArrowLeft, Check, Search, Calendar, Filter, Camera, Image as ImageIcon, X, Eye } from 'lucide-react';
 import Link from 'next/link';
 
 export type TipoAcero = 'Bit' | 'Martillo' | 'Tricono' | 'Barra' | 'Adaptador' | 'Amortiguador';
@@ -22,9 +22,48 @@ export interface SteelDiscardRecord {
   terreno: string;
   causaDescarte: string;
   mediciones: string;
+  fotoUrl?: string; // Foto comprimida en JPEG (Base64 / URL Supabase)
   createdAt: string;
   updatedAt: string;
 }
+
+// Función para reducir y comprimir fotografías en el cliente antes de guardar/subir
+const compressImage = (file: File, maxWidth = 1024, quality = 0.7): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(event.target?.result as string);
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+        // Exportar como JPEG con calidad optimizada al 70% (~90 KB)
+        const compressedBase64 = canvas.toDataURL('image/jpeg', quality);
+        resolve(compressedBase64);
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
+};
 
 export default function DiscardPage() {
   const [formData, setFormData] = useState<{
@@ -38,6 +77,7 @@ export default function DiscardPage() {
     terreno: string;
     causaDescarte: string;
     mediciones: string;
+    fotoUrl: string;
   }>({
     fecha: new Date().toISOString().split('T')[0],
     serie: '',
@@ -49,10 +89,19 @@ export default function DiscardPage() {
     terreno: 'Medio',
     causaDescarte: '',
     mediciones: '',
+    fotoUrl: '',
   });
 
   const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+
+  // Referencias para los inputs de cámara y galería
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const [isCompressing, setIsCompressing] = useState(false);
+
+  // Estado para la modal de vista previa de foto completa
+  const [fullImageModalUrl, setFullImageModalUrl] = useState<string | null>(null);
 
   // Estados de Búsqueda bajo demanda en la nube
   const [searchQuery, setSearchQuery] = useState('');
@@ -61,6 +110,24 @@ export default function DiscardPage() {
   const [searchResults, setSearchResults] = useState<SteelDiscardRecord[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+
+  // Manejador de selección de imagen (Cámara o Galería) con compresión automática
+  const handleImageSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsCompressing(true);
+    try {
+      const compressedDataUrl = await compressImage(file, 1024, 0.7);
+      setFormData((prev) => ({ ...prev, fotoUrl: compressedDataUrl }));
+    } catch (err) {
+      console.warn('Error comprimiendo la imagen:', err);
+      alert('Ocurrió un error al procesar la fotografía.');
+    } finally {
+      setIsCompressing(false);
+      if (e.target) e.target.value = '';
+    }
+  };
 
   // Función de búsqueda en la nube (Supabase + fallback IndexedDB) por Serie, Equipo o Rango de Fechas
   const handleCloudSearch = async (e?: React.FormEvent) => {
@@ -80,7 +147,6 @@ export default function DiscardPage() {
         .select('*')
         .order('updated_at', { ascending: false });
 
-      // Filtro por Rango de Fechas
       if (startDate) {
         query = query.gte('fecha_descarte', startDate);
       }
@@ -103,11 +169,11 @@ export default function DiscardPage() {
           terreno: d.terreno,
           causaDescarte: d.causa_descarte,
           mediciones: typeof d.mediciones === 'string' ? d.mediciones : (d.mediciones?.texto || ''),
+          fotoUrl: d.foto_url || d.fotoUrl || '',
           createdAt: d.created_at,
           updatedAt: d.updated_at,
         }));
 
-        // Filtro local por Serie o Equipo si hay texto de búsqueda
         if (searchQuery.trim()) {
           const q = searchQuery.trim().toLowerCase();
           results = results.filter(
@@ -117,7 +183,6 @@ export default function DiscardPage() {
 
         setSearchResults(results);
       } else {
-        // Fallback local desde IndexedDB
         await searchLocalIndexedDB();
       }
     } catch {
@@ -158,7 +223,6 @@ export default function DiscardPage() {
 
     setIsSaving(true);
 
-    // ID Compuesto: `tipoAcero-serie`
     const compositeId = `${formData.tipoAcero}-${formData.serie.trim()}`.toLowerCase();
     const nowIso = new Date().toISOString();
 
@@ -174,6 +238,7 @@ export default function DiscardPage() {
       terreno: formData.terreno,
       causaDescarte: formData.causaDescarte.trim(),
       mediciones: formData.mediciones.trim(),
+      fotoUrl: formData.fotoUrl,
       createdAt: nowIso,
       updatedAt: nowIso,
     };
@@ -197,7 +262,7 @@ export default function DiscardPage() {
       console.warn('Error en IndexedDB:', e);
     }
 
-    // Supabase Cloud Upsert
+    // Supabase Cloud Upsert (Guarda datos y foto comprimida)
     try {
       const { error } = await supabase.from('steel_discards').upsert([
         {
@@ -212,6 +277,7 @@ export default function DiscardPage() {
           terreno: formData.terreno,
           causa_descarte: formData.causaDescarte.trim(),
           mediciones: { texto: formData.mediciones.trim() },
+          foto_url: formData.fotoUrl,
           updated_at: nowIso,
         }
       ], { onConflict: 'id' });
@@ -221,11 +287,10 @@ export default function DiscardPage() {
       } else {
         console.log('[Supabase Discard] Registro respaldado en la nube.');
       }
-    } catch (err) {
+    } catch {
       console.warn('[Supabase Offline] Guardado localmente en IndexedDB.');
     }
 
-    // Si había una búsqueda activa, incluir de inmediato el nuevo registro en el área de resultados
     if (hasSearched) {
       setSearchResults((prev) => {
         if (!prev) return [newRecord];
@@ -251,6 +316,7 @@ export default function DiscardPage() {
       terreno: 'Medio',
       causaDescarte: '',
       mediciones: '',
+      fotoUrl: '',
     });
 
     setTimeout(() => setFeedback(null), 4000);
@@ -267,6 +333,23 @@ export default function DiscardPage() {
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto pb-12">
+      {/* Botones de captura de foto invisibles */}
+      <input
+        type="file"
+        accept="image/*"
+        capture="environment"
+        ref={cameraInputRef}
+        onChange={handleImageSelected}
+        className="hidden"
+      />
+      <input
+        type="file"
+        accept="image/*"
+        ref={galleryInputRef}
+        onChange={handleImageSelected}
+        className="hidden"
+      />
+
       {/* Botón Volver y Título */}
       <div className="flex items-center space-x-3">
         <Link href="/" className="text-slate-400 hover:text-slate-700 transition-colors">
@@ -291,17 +374,14 @@ export default function DiscardPage() {
 
       {/* Tarjeta Principal del Formulario DESCARTE DE ACEROS */}
       <div className="bg-white rounded-3xl shadow-xl border border-slate-200 overflow-hidden">
-        {/* Encabezado con línea amarilla */}
         <div className="p-6 sm:p-8 space-y-4">
           <div className="flex items-center space-x-3 text-slate-900">
             <Trash2 className="w-6 h-6 text-[#9E1B2C]" />
             <h2 className="text-xl font-extrabold tracking-wide uppercase">DESCARTE DE ACEROS</h2>
           </div>
 
-          {/* Línea de Acento Amarilla */}
           <div className="h-1 bg-amber-400 w-full rounded-full"></div>
 
-          {/* Formulario */}
           <form onSubmit={handleSubmit} className="space-y-5 pt-2">
             {/* Fila 1: FECHA | SERIE */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -444,6 +524,63 @@ export default function DiscardPage() {
               />
             </div>
 
+            {/* ========================================================================= */}
+            {/* NUEVO: SECCIÓN CAPTURA FOTOGRÁFICA CON COMPRESIÓN AUTOMÁTICA */}
+            {/* ========================================================================= */}
+            <div className="space-y-2 bg-slate-50 p-4 rounded-2xl border border-slate-200">
+              <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700">
+                REGISTRO FOTOGRÁFICO DE ACERO (OPCIONAL)
+              </label>
+
+              {isCompressing ? (
+                <div className="py-6 text-center text-xs font-bold text-amber-700 animate-pulse">
+                  Optimizando y reduciendo tamaño de fotografía...
+                </div>
+              ) : formData.fotoUrl ? (
+                <div className="space-y-2">
+                  <div className="relative w-full max-w-xs mx-auto rounded-xl overflow-hidden border-2 border-slate-300 shadow-sm group">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={formData.fotoUrl}
+                      alt="Vista Previa Acero"
+                      className="w-full h-44 object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, fotoUrl: '' })}
+                      title="Eliminar foto"
+                      className="absolute top-2 right-2 bg-red-600 text-white p-1.5 rounded-full shadow-md hover:bg-red-700 transition-all"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <span className="block text-[10px] text-center font-bold text-emerald-700">
+                    ✓ Fotograf&iacute;a optimizada (JPEG compressed ~90 KB)
+                  </span>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => cameraInputRef.current?.click()}
+                    className="py-3 px-4 bg-white border border-slate-300 hover:border-[#9E1B2C] text-slate-800 font-extrabold rounded-xl text-xs flex items-center justify-center space-x-2 shadow-sm hover:shadow transition-all cursor-pointer"
+                  >
+                    <Camera className="w-4 h-4 text-[#9E1B2C]" />
+                    <span>Tomar Foto (Cámara)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => galleryInputRef.current?.click()}
+                    className="py-3 px-4 bg-white border border-slate-300 hover:border-amber-500 text-slate-800 font-extrabold rounded-xl text-xs flex items-center justify-center space-x-2 shadow-sm hover:shadow transition-all cursor-pointer"
+                  >
+                    <ImageIcon className="w-4 h-4 text-amber-500" />
+                    <span>Elegir de Galería</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Botón Guardar / Registrar Descarte */}
             <div className="pt-2">
               <button
@@ -563,6 +700,7 @@ export default function DiscardPage() {
                     <th className="py-2.5 px-3">Serie</th>
                     <th className="py-2.5 px-3">Equipo</th>
                     <th className="py-2.5 px-3">Diámetro</th>
+                    <th className="py-2.5 px-3">Foto</th>
                     <th className="py-2.5 px-3">Causa</th>
                     <th className="py-2.5 px-3">Mediciones</th>
                   </tr>
@@ -579,6 +717,20 @@ export default function DiscardPage() {
                       <td className="py-2.5 px-3 font-mono font-bold text-slate-900">{rec.serie}</td>
                       <td className="py-2.5 px-3 font-semibold text-slate-700">{rec.equipo}</td>
                       <td className="py-2.5 px-3 font-mono text-slate-600">{rec.diametro}</td>
+                      <td className="py-2.5 px-3 text-center">
+                        {rec.fotoUrl ? (
+                          <button
+                            type="button"
+                            onClick={() => setFullImageModalUrl(rec.fotoUrl || null)}
+                            className="inline-flex items-center space-x-1 p-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-[10px] font-bold"
+                          >
+                            <Eye className="w-3 h-3 text-amber-600" />
+                            <span>Ver</span>
+                          </button>
+                        ) : (
+                          <span className="text-slate-300">-</span>
+                        )}
+                      </td>
                       <td className="py-2.5 px-3 text-slate-600 max-w-xs truncate" title={rec.causaDescarte}>
                         {rec.causaDescarte}
                       </td>
@@ -593,6 +745,29 @@ export default function DiscardPage() {
           </div>
         )}
       </div>
+
+      {/* Modal de Imagen Pantalla Completa */}
+      {fullImageModalUrl && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+          <div className="relative max-w-2xl w-full bg-white rounded-3xl p-4 space-y-3 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+              <span className="text-xs font-black uppercase text-slate-900">Fotografía de Registro de Acero</span>
+              <button
+                onClick={() => setFullImageModalUrl(null)}
+                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={fullImageModalUrl}
+              alt="Fotografía Acero Completa"
+              className="w-full max-h-[75vh] object-contain rounded-2xl border border-slate-200 bg-slate-900"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
