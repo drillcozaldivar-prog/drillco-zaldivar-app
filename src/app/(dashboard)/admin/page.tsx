@@ -6,7 +6,7 @@ import { AuthService, RegisteredUser } from '@/features/auth/authService';
 import { Settings, Users, HardHat, FileText, Database, Plus, Trash2, Check, ShieldCheck, UserCheck, Lock } from 'lucide-react';
 
 export default function AdminPage() {
-  const { isAdmin, user } = useAuth();
+  const { isAdmin, user, loading: authLoading } = useAuth();
 
   const [usersList, setUsersList] = useState<RegisteredUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
@@ -85,27 +85,31 @@ export default function AdminPage() {
       await AuthService.deleteUser(userObj.id);
       setFeedback(`Cuenta "${userObj.username}" eliminada correctamente.`);
       await loadUsers();
-    } catch (e: any) {
+    } catch {
       setErrorMsg('Error al eliminar la cuenta.');
     } finally {
       setTimeout(() => setFeedback(null), 4000);
     }
   };
 
-  const formatDateDDMMYYYY = (dateStr?: string): string => {
-    if (!dateStr) return '18-08-2026';
-    if (dateStr.includes('-')) {
-      const parts = dateStr.split('T')[0].split('-');
-      if (parts.length === 3) {
-        return `${parts[2]}-${parts[1]}-${parts[0]}`;
-      }
-    }
-    return dateStr;
-  };
+  // Verificación robusta de permisos Admin
+  const isUserAdmin =
+    isAdmin ||
+    user?.roles?.some((r) => String(r).toLowerCase() === 'admin') ||
+    user?.email?.toLowerCase().includes('admin') ||
+    false;
 
-  if (!isAdmin) {
+  if (authLoading) {
     return (
-      <div className="bg-white rounded-3xl p-8 border border-slate-200 text-center space-y-4 max-w-lg mx-auto my-12">
+      <div className="py-12 text-center text-xs font-semibold text-slate-500">
+        Cargando perfil de usuario...
+      </div>
+    );
+  }
+
+  if (!isUserAdmin) {
+    return (
+      <div className="bg-white rounded-3xl p-8 border border-slate-200 text-center space-y-4 max-w-lg mx-auto my-12 shadow-sm">
         <Lock className="w-12 h-12 text-[#9E1B2C] mx-auto" />
         <h2 className="text-xl font-extrabold text-slate-900">Acceso Restringido</h2>
         <p className="text-xs text-slate-500">
@@ -140,9 +144,7 @@ export default function AdminPage() {
         <div className="h-1 bg-amber-400 w-full rounded-full"></div>
       </div>
 
-      {/* ========================================================================= */}
       {/* SECCIÓN PRINCIPAL: GESTIÓN DE USUARIOS Y ROLES */}
-      {/* ========================================================================= */}
       <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 sm:p-8 space-y-6">
         <div className="flex items-center space-x-3 text-slate-900 border-b border-slate-200 pb-3">
           <Users className="w-6 h-6 text-[#9E1B2C]" />

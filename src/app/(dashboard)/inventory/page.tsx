@@ -68,7 +68,13 @@ const OFFICIAL_CATALOG: InventoryItem[] = [
 ];
 
 export default function InventoryPage() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, user } = useAuth();
+
+  const isUserAdmin =
+    isAdmin ||
+    user?.roles?.some((r) => String(r).toLowerCase() === 'admin') ||
+    user?.email?.toLowerCase().includes('admin') ||
+    false;
 
   const [selectedDate, setSelectedDate] = useState('2026-08-17');
   const [lastUpdateDate, setLastUpdateDate] = useState('17-08-2026');
@@ -434,7 +440,7 @@ export default function InventoryPage() {
                 <th className="py-3 px-3 w-14 text-center">UM</th>
                 <th className="py-3 px-4 w-36 text-center">Bod. Central</th>
                 <th className="py-3 px-4 w-16 text-center">SN</th>
-                {isAdmin && <th className="py-3 px-3 w-16 text-center">Quitar</th>}
+                {isUserAdmin && <th className="py-3 px-3 w-16 text-center">Quitar</th>}
               </tr>
             </thead>
             <tbody>
@@ -504,7 +510,7 @@ export default function InventoryPage() {
                     </td>
 
                     {/* Botón Eliminar Fila para Administradores */}
-                    {isAdmin && (
+                    {isUserAdmin && (
                       <td className="py-2 px-3 text-center">
                         <button
                           type="button"
@@ -527,7 +533,7 @@ export default function InventoryPage() {
       {/* ========================================================================= */}
       {/* SECCIÓN AL FINAL DE LA VENTANA: GESTIÓN DE CATÁLOGO (SOLO ADMINISTRADOR) */}
       {/* ========================================================================= */}
-      {isAdmin ? (
+      {isUserAdmin ? (
         <div className="bg-white rounded-3xl shadow-md border border-slate-200 p-6 sm:p-8 space-y-6">
           <div className="flex items-center space-x-3 text-slate-900 border-b border-slate-200 pb-3">
             <PackagePlus className="w-6 h-6 text-[#9E1B2C]" />

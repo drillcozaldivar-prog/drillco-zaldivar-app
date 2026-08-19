@@ -30,14 +30,19 @@ export function useAuth() {
     setUser(null);
   };
 
+  const hasRole = (roleName: string): boolean => {
+    if (!user || !user.roles || !Array.isArray(user.roles)) return false;
+    return user.roles.some((r) => String(r).toLowerCase() === roleName.toLowerCase());
+  };
+
   return {
     user,
     loading,
     login,
     logout,
-    isOperator: user?.roles.includes('operator') ?? false,
-    isSupervisor: user?.roles.includes('supervisor') ?? false,
-    isAdmin: user?.roles.includes('admin') ?? false,
-    isAuditor: user?.roles.includes('auditor') ?? false,
+    isOperator: hasRole('operator'),
+    isSupervisor: hasRole('supervisor'),
+    isAdmin: hasRole('admin'),
+    isAuditor: hasRole('auditor'),
   };
 }
