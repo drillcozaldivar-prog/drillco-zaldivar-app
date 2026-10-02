@@ -11,7 +11,7 @@ export interface RegisteredUser {
   createdAt: string;
 }
 
-// Cuentas Administrador Principales Iniciales (Nombres actualizados a admin1drillco y admin2drillco)
+// Cuentas Administrador Principales Iniciales (ÚNICAS VÁLIDAS: admin1drillco y admin2drillco)
 const INITIAL_USERS: RegisteredUser[] = [
   {
     id: 'usr-admin-1',
@@ -42,7 +42,7 @@ export class AuthService {
           .order('created_at', { ascending: true });
 
         if (!error && data && data.length > 0) {
-          const mapped: RegisteredUser[] = data.map((d: any) => ({
+          let mapped: RegisteredUser[] = data.map((d: any) => ({
             id: d.id,
             username: d.username,
             password: d.password,
@@ -51,7 +51,10 @@ export class AuthService {
             createdAt: d.created_at,
           }));
 
-          // Garantizar que las cuentas admin1drillco y admin2drillco estén incluidas en la lista
+          // Remover nombres antiguos de la lista
+          mapped = mapped.filter((u) => u.username !== 'admin1' && u.username !== 'admin2');
+
+          // Garantizar que las cuentas admin1drillco y admin2drillco estén incluidas
           INITIAL_USERS.forEach((adminUser) => {
             if (!mapped.some((u) => u.username.toLowerCase() === adminUser.username.toLowerCase())) {
               mapped.unshift(adminUser);
@@ -71,7 +74,7 @@ export class AuthService {
       if (saved?.value && Array.isArray(saved.value) && saved.value.length > 0) {
         let localList: RegisteredUser[] = saved.value;
 
-        // Migración automática de cuentas antiguas (admin1 -> admin1drillco, admin2 -> admin2drillco)
+        // Remover cuentas antiguas obsoletas (admin1 y admin2)
         localList = localList.filter((u) => u.username !== 'admin1' && u.username !== 'admin2');
         INITIAL_USERS.forEach((adminUser) => {
           if (!localList.some((u) => u.username.toLowerCase() === adminUser.username.toLowerCase())) {
@@ -90,17 +93,22 @@ export class AuthService {
     return INITIAL_USERS;
   }
 
-  // Iniciar sesión con validación offline & online
+  // Iniciar sesión con validación offline & online (Rechaza explícitamente admin1 o admin2 antiguos)
   static async login(usernameInput: string, passwordInput: string): Promise<UserProfile> {
     const cleanUser = usernameInput.trim().toLowerCase();
     const cleanPass = passwordInput.trim();
+
+    // Rechazar explícitamente nombres antiguos
+    if (cleanUser === 'admin1' || cleanUser === 'admin2') {
+      throw new Error("El nombre de usuario ha cambiado. Por favor utilice 'admin1drillco' o 'admin2drillco'.");
+    }
 
     const users = await this.getUsers();
     const foundUser = users.find(
       (u) => u.username.toLowerCase() === cleanUser && u.password === cleanPass
     );
 
-    // Permitir ingreso de admin1drillco y admin2drillco
+    // Permitir ingreso ÚNICAMENTE de admin1drillco y admin2drillco
     const isAdminAccount =
       (cleanUser === 'admin1drillco' && cleanPass === 'drillco2026') ||
       (cleanUser === 'admin2drillco' && cleanPass === 'drillco1387');
@@ -144,7 +152,7 @@ export class AuthService {
     return userProfile;
   }
 
-  // Obtener usuario actualmente autenticado (Garantizando roles de Admin)
+  // Obtener usuario actualmente autenticado (Expulsa inmediatamente logins de admin1/admin2 antiguos)
   static async getCurrentUser(): Promise<UserProfile | null> {
     try {
       const currentUserIdState = await db.appState.get('currentUserId');
@@ -158,21 +166,15 @@ export class AuthService {
       let profile: UserProfile = cached.profile;
       const username = (currentUsernameState?.value || profile.email?.split('@')[0] || '').toLowerCase();
 
-      // Si el usuario era la cuenta antigua 'admin1' o 'admin2', forzar actualización a 'admin1drillco' / 'admin2drillco'
+      // SI LA SESIÓN TIENE EL USUARIO ANTIGUO 'admin1' O 'admin2', CERRAR SESIÓN FORZADA E INVALIDAR
       if (username === 'admin1' || username === 'admin2') {
-        const newUsername = username === 'admin1' ? 'admin1drillco' : 'admin2drillco';
-        await db.appState.put({ key: 'currentUsername', value: newUsername });
-        profile.email = `${newUsername}@drillco.com`;
+        console.warn(`[AuthService] Sesión obsoleta detectada (${username}). Cerrando sesión de inmediato.`);
+        await this.logout();
+        return null;
       }
 
       // Garantizar que cuentas admin principales siempre posean 'admin' en sus roles
-      const isSystemAdmin =
-        username === 'admin1drillco' ||
-        username === 'admin2drillco' ||
-        username === 'admin1' ||
-        username === 'admin2' ||
-        username.includes('admin');
-
+      const isSystemAdmin = username === 'admin1drillco' || username === 'admin2drillco' || username.includes('admin');
       if (isSystemAdmin || profile.roles?.some((r: string) => String(r).toLowerCase() === 'admin')) {
         if (!profile.roles.includes('admin')) {
           profile.roles = ['admin', 'supervisor', 'operator'];
@@ -188,10 +190,10 @@ export class AuthService {
     return null;
   }
 
-  // Verificación activa en la nube cuando hay conexión: si la cuenta no existe, forzar LOGOUT
+  // Verificación activa en la nube cuando hay conexión: si la cuenta no existe o es obsoleta, forzar LOGOUT
   static async verifyAccountOnline(): Promise<boolean> {
     if (typeof window === 'undefined' || !navigator.onLine) {
-      return true; // En modo OFFLINE siempre se permite continuar trabajando
+      return true; // En modo OFFLINE se permite operar solo si el usuario no es admin1/admin2 antiguo
     }
 
     try {
@@ -202,19 +204,19 @@ export class AuthService {
 
       const currentUsername = (currentUsernameState?.value || '').toLowerCase();
 
+      // Cuentas antiguas 'admin1' y 'admin2' -> FORZAR LOGOUT INMEDIATO
+      if (currentUsername === 'admin1' || currentUsername === 'admin2') {
+        console.warn(`[AuthService] Cuenta obsoleta "${currentUsername}". Ejecutando logout forzado.`);
+        await this.logout();
+        return false;
+      }
+
       // Cuentas del sistema protegidas válidas
       if (currentUsername === 'admin1drillco' || currentUsername === 'admin2drillco') {
         return true;
       }
 
-      // Si el usuario sigue conectado con el nombre antiguo 'admin1' o 'admin2', la cuenta fue renombrada -> LOGOUT FORZADO
-      if (currentUsername === 'admin1' || currentUsername === 'admin2') {
-        console.warn(`[AuthService] Nombre de cuenta antiguo "${currentUsername}". Requiere login con nuevo usuario.`);
-        await this.logout();
-        return false;
-      }
-
-      // Consultar en Supabase Nube si el usuario existe
+      // Consultar en Supabase Nube si la cuenta sigue existiendo
       const { data, error } = await supabase
         .from('app_users')
         .select('id, username')
@@ -222,7 +224,7 @@ export class AuthService {
         .limit(1);
 
       if (!error && data && data.length === 0) {
-        console.warn(`[AuthService] La cuenta "${currentUsername}" fue eliminada o renombrada en la nube. Ejecutando logout forzado.`);
+        console.warn(`[AuthService] La cuenta "${currentUsername}" ya no existe en la nube. Ejecutando logout forzado.`);
         await this.logout();
         return false;
       }
@@ -242,6 +244,10 @@ export class AuthService {
   }): Promise<RegisteredUser> {
     const users = await this.getUsers();
     const cleanUsername = userData.username.trim().toLowerCase();
+
+    if (cleanUsername === 'admin1' || cleanUsername === 'admin2') {
+      throw new Error("Los nombres 'admin1' y 'admin2' están obsoletos. Utilice 'admin1drillco' o 'admin2drillco'.");
+    }
 
     if (users.some((u) => u.username.toLowerCase() === cleanUsername)) {
       throw new Error(`El nombre de usuario "${cleanUsername}" ya se encuentra registrado.`);
