@@ -11,7 +11,7 @@ export interface RegisteredUser {
   createdAt: string;
 }
 
-// Cuentas Administrador Principales Iniciales (ÚNICAS VÁLIDAS: admin1drillco y admin2drillco)
+// Cuentas Administrador Principales Iniciales (ÚNICAS VÁLIDAS EN TODO EL SISTEMA: admin1drillco y admin2drillco)
 const INITIAL_USERS: RegisteredUser[] = [
   {
     id: 'usr-admin-1',
@@ -51,8 +51,13 @@ export class AuthService {
             createdAt: d.created_at,
           }));
 
-          // Remover nombres antiguos de la lista
-          mapped = mapped.filter((u) => u.username !== 'admin1' && u.username !== 'admin2');
+          // Purgar estrictamente cualquier nombre antiguo (admin1, admin2, admin)
+          mapped = mapped.filter(
+            (u) =>
+              u.username.toLowerCase() !== 'admin1' &&
+              u.username.toLowerCase() !== 'admin2' &&
+              u.username.toLowerCase() !== 'admin'
+          );
 
           // Garantizar que las cuentas admin1drillco y admin2drillco estén incluidas
           INITIAL_USERS.forEach((adminUser) => {
@@ -74,8 +79,13 @@ export class AuthService {
       if (saved?.value && Array.isArray(saved.value) && saved.value.length > 0) {
         let localList: RegisteredUser[] = saved.value;
 
-        // Remover cuentas antiguas obsoletas (admin1 y admin2)
-        localList = localList.filter((u) => u.username !== 'admin1' && u.username !== 'admin2');
+        // Purgar cuentas obsoletas (admin1, admin2, admin)
+        localList = localList.filter(
+          (u) =>
+            u.username.toLowerCase() !== 'admin1' &&
+            u.username.toLowerCase() !== 'admin2' &&
+            u.username.toLowerCase() !== 'admin'
+        );
         INITIAL_USERS.forEach((adminUser) => {
           if (!localList.some((u) => u.username.toLowerCase() === adminUser.username.toLowerCase())) {
             localList.unshift(adminUser);
@@ -93,14 +103,14 @@ export class AuthService {
     return INITIAL_USERS;
   }
 
-  // Iniciar sesión con validación offline & online (Rechaza explícitamente admin1 o admin2 antiguos)
+  // Iniciar sesión (Rechaza explícitamente admin1/admin2/admin)
   static async login(usernameInput: string, passwordInput: string): Promise<UserProfile> {
     const cleanUser = usernameInput.trim().toLowerCase();
     const cleanPass = passwordInput.trim();
 
-    // Rechazar explícitamente nombres antiguos
-    if (cleanUser === 'admin1' || cleanUser === 'admin2') {
-      throw new Error("El nombre de usuario ha cambiado. Por favor utilice 'admin1drillco' o 'admin2drillco'.");
+    // Rechazo estricto e inmediato de credenciales o nombres antiguos
+    if (cleanUser === 'admin1' || cleanUser === 'admin2' || cleanUser === 'admin') {
+      throw new Error("Su cuenta ha sido actualizada. Inicie sesión con 'admin1drillco' o 'admin2drillco'.");
     }
 
     const users = await this.getUsers();
@@ -108,7 +118,7 @@ export class AuthService {
       (u) => u.username.toLowerCase() === cleanUser && u.password === cleanPass
     );
 
-    // Permitir ingreso ÚNICAMENTE de admin1drillco y admin2drillco
+    // ÚNICAS dos cuentas de sistema válidas
     const isAdminAccount =
       (cleanUser === 'admin1drillco' && cleanPass === 'drillco2026') ||
       (cleanUser === 'admin2drillco' && cleanPass === 'drillco1387');
@@ -119,17 +129,16 @@ export class AuthService {
 
     const effectiveRole = isAdminAccount
       ? 'admin'
-      : foundUser?.role || (cleanUser.includes('admin') ? 'admin' : 'operator');
+      : foundUser?.role || 'operator';
 
     const roles: RoleCode[] = effectiveRole === 'admin' ? ['admin', 'supervisor', 'operator'] : ['operator'];
-    const userId = foundUser?.id || `usr-${cleanUser}`;
+    const userId = cleanUser === 'admin1drillco' ? 'usr-admin-1' : cleanUser === 'admin2drillco' ? 'usr-admin-2' : foundUser?.id || `usr-${cleanUser}`;
     const fullName =
-      foundUser?.fullName ||
-      (cleanUser === 'admin1drillco'
+      cleanUser === 'admin1drillco'
         ? 'Administrador 1'
         : cleanUser === 'admin2drillco'
         ? 'Administrador 2'
-        : cleanUser);
+        : foundUser?.fullName || cleanUser;
 
     const userProfile: UserProfile = {
       id: userId,
@@ -152,7 +161,7 @@ export class AuthService {
     return userProfile;
   }
 
-  // Obtener usuario actualmente autenticado (Expulsa inmediatamente logins de admin1/admin2 antiguos)
+  // Obtener usuario actualmente autenticado (PURGA E EXPULSA SESIONES ANTIGUAS DE INMEDIATO)
   static async getCurrentUser(): Promise<UserProfile | null> {
     try {
       const currentUserIdState = await db.appState.get('currentUserId');
@@ -166,20 +175,21 @@ export class AuthService {
       let profile: UserProfile = cached.profile;
       const username = (currentUsernameState?.value || profile.email?.split('@')[0] || '').toLowerCase();
 
-      // SI LA SESIÓN TIENE EL USUARIO ANTIGUO 'admin1' O 'admin2', CERRAR SESIÓN FORZADA E INVALIDAR
-      if (username === 'admin1' || username === 'admin2') {
-        console.warn(`[AuthService] Sesión obsoleta detectada (${username}). Cerrando sesión de inmediato.`);
+      // SI EL USUARIO GUARDADO ES 'admin1', 'admin2', 'admin' O NO ES NI admin1drillco NI admin2drillco NI UN USUARIO REGISTRADO:
+      const isValidAdmin = username === 'admin1drillco' || username === 'admin2drillco';
+      const isObsoleteUser = username === 'admin1' || username === 'admin2' || username === 'admin';
+
+      if (isObsoleteUser || (!isValidAdmin && profile.email?.includes('admin1@') || profile.email?.includes('admin2@'))) {
+        console.warn(`[AuthService] DETECTADA SESIÓN OBSOLETA ("${username}"). EXPULSANDO Y PURGANDO AL LOGIN...`);
         await this.logout();
         return null;
       }
 
-      // Garantizar que cuentas admin principales siempre posean 'admin' en sus roles
-      const isSystemAdmin = username === 'admin1drillco' || username === 'admin2drillco' || username.includes('admin');
-      if (isSystemAdmin || profile.roles?.some((r: string) => String(r).toLowerCase() === 'admin')) {
-        if (!profile.roles.includes('admin')) {
-          profile.roles = ['admin', 'supervisor', 'operator'];
-          await db.cachedUserProfile.put({ userId: currentUserIdState.value, profile });
-        }
+      // Si es cuenta admin válida, asegurar permisos admin
+      if (isValidAdmin) {
+        profile.roles = ['admin', 'supervisor', 'operator'];
+        profile.email = `${username}@drillco.com`;
+        await db.cachedUserProfile.put({ userId: currentUserIdState.value, profile });
       }
 
       return profile;
@@ -190,12 +200,8 @@ export class AuthService {
     return null;
   }
 
-  // Verificación activa en la nube cuando hay conexión: si la cuenta no existe o es obsoleta, forzar LOGOUT
+  // Verificación activa en la nube: si no es admin1drillco ni admin2drillco ni existe en app_users -> PURGA
   static async verifyAccountOnline(): Promise<boolean> {
-    if (typeof window === 'undefined' || !navigator.onLine) {
-      return true; // En modo OFFLINE se permite operar solo si el usuario no es admin1/admin2 antiguo
-    }
-
     try {
       const currentUserIdState = await db.appState.get('currentUserId');
       const currentUsernameState = await db.appState.get('currentUsername');
@@ -204,32 +210,34 @@ export class AuthService {
 
       const currentUsername = (currentUsernameState?.value || '').toLowerCase();
 
-      // Cuentas antiguas 'admin1' y 'admin2' -> FORZAR LOGOUT INMEDIATO
-      if (currentUsername === 'admin1' || currentUsername === 'admin2') {
-        console.warn(`[AuthService] Cuenta obsoleta "${currentUsername}". Ejecutando logout forzado.`);
+      // Cuentas antiguas 'admin1', 'admin2', 'admin' -> FORZAR LOGOUT E INVALIDAR DE INMEDIATO
+      if (currentUsername === 'admin1' || currentUsername === 'admin2' || currentUsername === 'admin') {
+        console.warn(`[AuthService] Verificación online: Cuenta obsoleta "${currentUsername}". Purgando sesión.`);
         await this.logout();
         return false;
       }
 
-      // Cuentas del sistema protegidas válidas
+      // Cuentas principales autorizadas
       if (currentUsername === 'admin1drillco' || currentUsername === 'admin2drillco') {
         return true;
       }
 
-      // Consultar en Supabase Nube si la cuenta sigue existiendo
-      const { data, error } = await supabase
-        .from('app_users')
-        .select('id, username')
-        .or(`id.eq.${currentUserIdState.value},username.eq.${currentUsername}`)
-        .limit(1);
+      if (typeof window !== 'undefined' && navigator.onLine) {
+        // Consultar en Supabase Nube si la cuenta existe en app_users
+        const { data, error } = await supabase
+          .from('app_users')
+          .select('id, username')
+          .or(`id.eq.${currentUserIdState.value},username.eq.${currentUsername}`)
+          .limit(1);
 
-      if (!error && data && data.length === 0) {
-        console.warn(`[AuthService] La cuenta "${currentUsername}" ya no existe en la nube. Ejecutando logout forzado.`);
-        await this.logout();
-        return false;
+        if (!error && data && data.length === 0) {
+          console.warn(`[AuthService] La cuenta "${currentUsername}" fue revocado en la nube. Purgando sesión.`);
+          await this.logout();
+          return false;
+        }
       }
     } catch {
-      // Si ocurre error de red o timeout, mantiene la sesión activa (Regla de Modo Offline)
+      // Mantiene sesión si offline y usuario es válido
     }
 
     return true;
@@ -245,7 +253,7 @@ export class AuthService {
     const users = await this.getUsers();
     const cleanUsername = userData.username.trim().toLowerCase();
 
-    if (cleanUsername === 'admin1' || cleanUsername === 'admin2') {
+    if (cleanUsername === 'admin1' || cleanUsername === 'admin2' || cleanUsername === 'admin') {
       throw new Error("Los nombres 'admin1' y 'admin2' están obsoletos. Utilice 'admin1drillco' o 'admin2drillco'.");
     }
 
@@ -301,11 +309,12 @@ export class AuthService {
     }
   }
 
-  // Cerrar sesión
+  // Cerrar sesión y purgar caché de usuario local
   static async logout(): Promise<void> {
     try {
       await db.appState.delete('currentUserId');
       await db.appState.delete('currentUsername');
+      await db.cachedUserProfile.clear();
     } catch (e) {
       console.error('[AuthService] Error cerrando sesión:', e);
     }
