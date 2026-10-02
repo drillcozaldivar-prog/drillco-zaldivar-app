@@ -72,8 +72,9 @@ export default function AdminPage() {
   };
 
   const handleDeleteUser = async (userObj: RegisteredUser) => {
-    if (userObj.username === 'admin1' || userObj.username === 'admin2') {
-      alert('Las cuentas principales admin1 y admin2 forman parte de la configuración del sistema y no se pueden eliminar.');
+    const un = userObj.username.toLowerCase();
+    if (un === 'admin1drillco' || un === 'admin2drillco' || un === 'admin1' || un === 'admin2') {
+      alert('Las cuentas principales admin1drillco y admin2drillco forman parte de la configuración del sistema y no se pueden eliminar.');
       return;
     }
 
@@ -113,7 +114,7 @@ export default function AdminPage() {
         <Lock className="w-12 h-12 text-[#9E1B2C] mx-auto" />
         <h2 className="text-xl font-extrabold text-slate-900">Acceso Restringido</h2>
         <p className="text-xs text-slate-500">
-          La sección de Administración y Gestión de Usuarios requiere credenciales de cuenta Administrador (`admin1` o `admin2`).
+          La sección de Administración y Gestión de Usuarios requiere credenciales de cuenta Administrador (`admin1drillco` o `admin2drillco`).
         </p>
       </div>
     );
@@ -250,44 +251,49 @@ export default function AdminPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {usersList.map((u) => (
-                      <tr key={u.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                        <td className="py-2.5 px-3 font-bold text-slate-900">
-                          <div>
-                            <span className="font-mono text-slate-900">{u.username}</span>
-                            <span className="block text-[10px] text-slate-400 font-normal">{u.fullName}</span>
-                          </div>
-                        </td>
-                        <td className="py-2.5 px-3">
-                          {u.role === 'admin' ? (
-                            <span className="bg-red-50 text-[#9E1B2C] border border-red-200 text-[10px] font-black px-2 py-0.5 rounded-full inline-flex items-center space-x-1">
-                              <ShieldCheck className="w-3 h-3" />
-                              <span>Admin</span>
-                            </span>
-                          ) : (
-                            <span className="bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center space-x-1">
-                              <UserCheck className="w-3 h-3 text-slate-500" />
-                              <span>Normal</span>
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-slate-600 text-[11px]">{u.password}</td>
-                        <td className="py-2.5 px-3 text-center">
-                          {u.username === 'admin1' || u.username === 'admin2' ? (
-                            <span className="text-[10px] font-bold text-slate-400">Sistema</span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteUser(u)}
-                              title="Eliminar cuenta"
-                              className="p-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg border border-red-200 transition-colors"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                    {usersList.map((u) => {
+                      const un = u.username.toLowerCase();
+                      const isSys = un === 'admin1drillco' || un === 'admin2drillco' || un === 'admin1' || un === 'admin2';
+
+                      return (
+                        <tr key={u.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                          <td className="py-2.5 px-3 font-bold text-slate-900">
+                            <div>
+                              <span className="font-mono text-slate-900">{u.username}</span>
+                              <span className="block text-[10px] text-slate-400 font-normal">{u.fullName}</span>
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            {u.role === 'admin' ? (
+                              <span className="bg-red-50 text-[#9E1B2C] border border-red-200 text-[10px] font-black px-2 py-0.5 rounded-full inline-flex items-center space-x-1">
+                                <ShieldCheck className="w-3 h-3" />
+                                <span>Admin</span>
+                              </span>
+                            ) : (
+                              <span className="bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center space-x-1">
+                                <UserCheck className="w-3 h-3 text-slate-500" />
+                                <span>Normal</span>
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 font-mono text-slate-600 text-[11px]">{u.password}</td>
+                          <td className="py-2.5 px-3 text-center">
+                            {isSys ? (
+                              <span className="text-[10px] font-bold text-slate-400">Sistema</span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteUser(u)}
+                                title="Eliminar cuenta"
+                                className="p-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg border border-red-200 transition-colors"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

@@ -9,9 +9,48 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const checkOnlineAccountStatus = async () => {
+      if (typeof window !== 'undefined' && navigator.onLine) {
+        const isValid = await AuthService.verifyAccountOnline();
+        if (!isValid) {
+          setUser(null);
+          if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+            window.location.href = '/login?reason=account_revoked';
+          }
+        }
+      }
+    };
+
     AuthService.getCurrentUser()
-      .then((u) => setUser(u))
+      .then((u) => {
+        setUser(u);
+        if (u) {
+          checkOnlineAccountStatus();
+        }
+      })
       .finally(() => setLoading(false));
+
+    // Revisión periódica activa en segundo plano (cada 15 segundos) al estar Online
+    const interval = setInterval(() => {
+      if (typeof window !== 'undefined' && navigator.onLine) {
+        checkOnlineAccountStatus();
+      }
+    }, 15000);
+
+    const handleOnline = () => {
+      checkOnlineAccountStatus();
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', handleOnline);
+    }
+
+    return () => {
+      clearInterval(interval);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', handleOnline);
+      }
+    };
   }, []);
 
   const login = async (email: string, pass: string) => {
