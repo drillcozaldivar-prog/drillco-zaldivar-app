@@ -11,7 +11,7 @@ export interface RegisteredUser {
   createdAt: string;
 }
 
-// Cuentas Administrador Principales Iniciales (ÚNICAS VÁLIDAS EN TODO EL SISTEMA: admin1drillco y admin2drillco)
+// Cuentas Administrador Principales Iniciales
 const INITIAL_USERS: RegisteredUser[] = [
   {
     id: 'usr-admin-1',
@@ -51,7 +51,7 @@ export class AuthService {
             createdAt: d.created_at,
           }));
 
-          // Purgar estrictamente cualquier nombre antiguo (admin1, admin2, admin)
+          // Purgar cualquier nombre antiguo (admin1, admin2, admin)
           mapped = mapped.filter(
             (u) =>
               u.username.toLowerCase() !== 'admin1' &&
@@ -103,14 +103,14 @@ export class AuthService {
     return INITIAL_USERS;
   }
 
-  // Iniciar sesión (Rechaza explícitamente admin1/admin2/admin)
+  // Iniciar sesión (Mensajes genéricos de seguridad)
   static async login(usernameInput: string, passwordInput: string): Promise<UserProfile> {
     const cleanUser = usernameInput.trim().toLowerCase();
     const cleanPass = passwordInput.trim();
 
-    // Rechazo estricto e inmediato de credenciales o nombres antiguos
+    // Rechazo estricto sin revelar nombres válidos
     if (cleanUser === 'admin1' || cleanUser === 'admin2' || cleanUser === 'admin') {
-      throw new Error("Su cuenta ha sido actualizada. Inicie sesión con 'admin1drillco' o 'admin2drillco'.");
+      throw new Error('Usuario o contraseña incorrectos');
     }
 
     const users = await this.getUsers();
@@ -118,7 +118,6 @@ export class AuthService {
       (u) => u.username.toLowerCase() === cleanUser && u.password === cleanPass
     );
 
-    // ÚNICAS dos cuentas de sistema válidas
     const isAdminAccount =
       (cleanUser === 'admin1drillco' && cleanPass === 'drillco2026') ||
       (cleanUser === 'admin2drillco' && cleanPass === 'drillco1387');
@@ -161,7 +160,7 @@ export class AuthService {
     return userProfile;
   }
 
-  // Obtener usuario actualmente autenticado (PURGA E EXPULSA SESIONES ANTIGUAS DE INMEDIATO)
+  // Obtener usuario actualmente autenticado
   static async getCurrentUser(): Promise<UserProfile | null> {
     try {
       const currentUserIdState = await db.appState.get('currentUserId');
@@ -175,17 +174,15 @@ export class AuthService {
       let profile: UserProfile = cached.profile;
       const username = (currentUsernameState?.value || profile.email?.split('@')[0] || '').toLowerCase();
 
-      // SI EL USUARIO GUARDADO ES 'admin1', 'admin2', 'admin' O NO ES NI admin1drillco NI admin2drillco NI UN USUARIO REGISTRADO:
+      // Expulsar sesiones obsoletas silenciosamente
       const isValidAdmin = username === 'admin1drillco' || username === 'admin2drillco';
       const isObsoleteUser = username === 'admin1' || username === 'admin2' || username === 'admin';
 
-      if (isObsoleteUser || (!isValidAdmin && profile.email?.includes('admin1@') || profile.email?.includes('admin2@'))) {
-        console.warn(`[AuthService] DETECTADA SESIÓN OBSOLETA ("${username}"). EXPULSANDO Y PURGANDO AL LOGIN...`);
+      if (isObsoleteUser || (!isValidAdmin && (profile.email?.includes('admin1@') || profile.email?.includes('admin2@')))) {
         await this.logout();
         return null;
       }
 
-      // Si es cuenta admin válida, asegurar permisos admin
       if (isValidAdmin) {
         profile.roles = ['admin', 'supervisor', 'operator'];
         profile.email = `${username}@drillco.com`;
@@ -200,7 +197,7 @@ export class AuthService {
     return null;
   }
 
-  // Verificación activa en la nube: si no es admin1drillco ni admin2drillco ni existe en app_users -> PURGA
+  // Verificación activa en la nube
   static async verifyAccountOnline(): Promise<boolean> {
     try {
       const currentUserIdState = await db.appState.get('currentUserId');
@@ -210,20 +207,16 @@ export class AuthService {
 
       const currentUsername = (currentUsernameState?.value || '').toLowerCase();
 
-      // Cuentas antiguas 'admin1', 'admin2', 'admin' -> FORZAR LOGOUT E INVALIDAR DE INMEDIATO
       if (currentUsername === 'admin1' || currentUsername === 'admin2' || currentUsername === 'admin') {
-        console.warn(`[AuthService] Verificación online: Cuenta obsoleta "${currentUsername}". Purgando sesión.`);
         await this.logout();
         return false;
       }
 
-      // Cuentas principales autorizadas
       if (currentUsername === 'admin1drillco' || currentUsername === 'admin2drillco') {
         return true;
       }
 
       if (typeof window !== 'undefined' && navigator.onLine) {
-        // Consultar en Supabase Nube si la cuenta existe en app_users
         const { data, error } = await supabase
           .from('app_users')
           .select('id, username')
@@ -231,7 +224,6 @@ export class AuthService {
           .limit(1);
 
         if (!error && data && data.length === 0) {
-          console.warn(`[AuthService] La cuenta "${currentUsername}" fue revocado en la nube. Purgando sesión.`);
           await this.logout();
           return false;
         }
@@ -243,7 +235,7 @@ export class AuthService {
     return true;
   }
 
-  // Crear Nuevo Usuario (Solo para Administrador)
+  // Crear Nuevo Usuario
   static async createUser(userData: {
     username: string;
     password: string;
@@ -254,7 +246,7 @@ export class AuthService {
     const cleanUsername = userData.username.trim().toLowerCase();
 
     if (cleanUsername === 'admin1' || cleanUsername === 'admin2' || cleanUsername === 'admin') {
-      throw new Error("Los nombres 'admin1' y 'admin2' están obsoletos. Utilice 'admin1drillco' o 'admin2drillco'.");
+      throw new Error('El nombre de usuario no se encuentra disponible.');
     }
 
     if (users.some((u) => u.username.toLowerCase() === cleanUsername)) {
@@ -295,7 +287,7 @@ export class AuthService {
     return newUser;
   }
 
-  // Eliminar Usuario (Solo para Administrador)
+  // Eliminar Usuario
   static async deleteUser(userId: string): Promise<void> {
     const users = await this.getUsers();
     const updatedUsers = users.filter((u) => u.id !== userId);
@@ -309,7 +301,7 @@ export class AuthService {
     }
   }
 
-  // Cerrar sesión y purgar caché de usuario local
+  // Cerrar sesión
   static async logout(): Promise<void> {
     try {
       await db.appState.delete('currentUserId');
