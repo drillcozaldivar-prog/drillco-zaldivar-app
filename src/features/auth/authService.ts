@@ -11,7 +11,7 @@ export interface RegisteredUser {
   createdAt: string;
 }
 
-// Cuentas Administrador Principales Iniciales
+// Cuentas Administrador Principales Iniciales (ÚNICAS VÁLIDAS: admin1drillco y admin2drillco)
 const INITIAL_USERS: RegisteredUser[] = [
   {
     id: 'usr-admin-1',
@@ -32,6 +32,26 @@ const INITIAL_USERS: RegisteredUser[] = [
 ];
 
 export class AuthService {
+  // Purga completa de toda la información almacenada en memoria local y almacenamiento del navegador
+  static async purgeAllStoredData(): Promise<void> {
+    try {
+      await db.cachedUserProfile.clear();
+      await db.cachedPermissions.clear();
+      await db.appState.clear();
+    } catch (e) {
+      console.error('[AuthService] Error purgando IndexedDB:', e);
+    }
+
+    try {
+      if (typeof window !== 'undefined') {
+        localStorage.clear();
+        sessionStorage.clear();
+      }
+    } catch (e) {
+      console.error('[AuthService] Error purgando Web Storage:', e);
+    }
+  }
+
   // Obtener lista completa de usuarios (Supabase + IndexedDB)
   static async getUsers(): Promise<RegisteredUser[]> {
     try {
@@ -51,7 +71,7 @@ export class AuthService {
             createdAt: d.created_at,
           }));
 
-          // Purgar cualquier nombre antiguo (admin1, admin2, admin)
+          // Purgar cualquier usuario obsoleto
           mapped = mapped.filter(
             (u) =>
               u.username.toLowerCase() !== 'admin1' &&
@@ -59,7 +79,6 @@ export class AuthService {
               u.username.toLowerCase() !== 'admin'
           );
 
-          // Garantizar que las cuentas admin1drillco y admin2drillco estén incluidas
           INITIAL_USERS.forEach((adminUser) => {
             if (!mapped.some((u) => u.username.toLowerCase() === adminUser.username.toLowerCase())) {
               mapped.unshift(adminUser);
@@ -79,7 +98,6 @@ export class AuthService {
       if (saved?.value && Array.isArray(saved.value) && saved.value.length > 0) {
         let localList: RegisteredUser[] = saved.value;
 
-        // Purgar cuentas obsoletas (admin1, admin2, admin)
         localList = localList.filter(
           (u) =>
             u.username.toLowerCase() !== 'admin1' &&
@@ -103,12 +121,11 @@ export class AuthService {
     return INITIAL_USERS;
   }
 
-  // Iniciar sesión (Mensajes genéricos de seguridad)
+  // Iniciar sesión guardando credenciales activas verificables
   static async login(usernameInput: string, passwordInput: string): Promise<UserProfile> {
     const cleanUser = usernameInput.trim().toLowerCase();
     const cleanPass = passwordInput.trim();
 
-    // Rechazo estricto sin revelar nombres válidos
     if (cleanUser === 'admin1' || cleanUser === 'admin2' || cleanUser === 'admin') {
       throw new Error('Usuario o contraseña incorrectos');
     }
@@ -118,26 +135,29 @@ export class AuthService {
       (u) => u.username.toLowerCase() === cleanUser && u.password === cleanPass
     );
 
-    const isAdminAccount =
-      (cleanUser === 'admin1drillco' && cleanPass === 'drillco2026') ||
-      (cleanUser === 'admin2drillco' && cleanPass === 'drillco1387');
+    const isInitialAdmin1 = cleanUser === 'admin1drillco' && cleanPass === 'drillco2026';
+    const isInitialAdmin2 = cleanUser === 'admin2drillco' && cleanPass === 'drillco1387';
 
-    if (!foundUser && !isAdminAccount) {
+    if (!foundUser && !isInitialAdmin1 && !isInitialAdmin2) {
       throw new Error('Usuario o contraseña incorrectos');
     }
 
-    const effectiveRole = isAdminAccount
+    const effectiveRole = (isInitialAdmin1 || isInitialAdmin2)
       ? 'admin'
       : foundUser?.role || 'operator';
 
     const roles: RoleCode[] = effectiveRole === 'admin' ? ['admin', 'supervisor', 'operator'] : ['operator'];
-    const userId = cleanUser === 'admin1drillco' ? 'usr-admin-1' : cleanUser === 'admin2drillco' ? 'usr-admin-2' : foundUser?.id || `usr-${cleanUser}`;
-    const fullName =
-      cleanUser === 'admin1drillco'
-        ? 'Administrador 1'
-        : cleanUser === 'admin2drillco'
-        ? 'Administrador 2'
-        : foundUser?.fullName || cleanUser;
+    const userId = isInitialAdmin1
+      ? 'usr-admin-1'
+      : isInitialAdmin2
+      ? 'usr-admin-2'
+      : foundUser?.id || `usr-${cleanUser}`;
+
+    const fullName = isInitialAdmin1
+      ? 'Administrador 1'
+      : isInitialAdmin2
+      ? 'Administrador 2'
+      : foundUser?.fullName || cleanUser;
 
     const userProfile: UserProfile = {
       id: userId,
@@ -152,84 +172,168 @@ export class AuthService {
     try {
       await db.cachedUserProfile.put({ userId, profile: userProfile });
       await db.appState.put({ key: 'currentUserId', value: userId });
-      await db.appState.put({ key: 'currentUsername', value: cleanUser });
+      await db.appState.put({ key: 'sessionUser', value: cleanUser });
+      await db.appState.put({ key: 'sessionPassword', value: cleanPass });
+
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('drillco_session_user', cleanUser);
+        localStorage.setItem('drillco_session_pass', cleanPass);
+      }
     } catch (e) {
-      console.error('[AuthService] Error en IndexedDB:', e);
+      console.error('[AuthService] Error guardando sesión:', e);
     }
 
     return userProfile;
   }
 
-  // Obtener usuario actualmente autenticado
+  // Verificación estricta en CADA APERTURA de la app: si no coincide con una cuenta registrada, purga total y expulsión
   static async getCurrentUser(): Promise<UserProfile | null> {
     try {
-      const currentUserIdState = await db.appState.get('currentUserId');
-      const currentUsernameState = await db.appState.get('currentUsername');
+      let sessionUser = '';
+      let sessionPass = '';
 
-      if (!currentUserIdState?.value) return null;
+      // 1. Extraer usuario y contraseña guardados en IndexedDB o LocalStorage
+      const storedUser = await db.appState.get('sessionUser');
+      const storedPass = await db.appState.get('sessionPassword');
 
-      const cached = await db.cachedUserProfile.get(currentUserIdState.value);
-      if (!cached || !cached.profile) return null;
+      if (storedUser?.value && storedPass?.value) {
+        sessionUser = storedUser.value;
+        sessionPass = storedPass.value;
+      } else if (typeof window !== 'undefined') {
+        sessionUser = localStorage.getItem('drillco_session_user') || '';
+        sessionPass = localStorage.getItem('drillco_session_pass') || '';
+      }
 
-      let profile: UserProfile = cached.profile;
-      const username = (currentUsernameState?.value || profile.email?.split('@')[0] || '').toLowerCase();
-
-      // Expulsar sesiones obsoletas silenciosamente
-      const isValidAdmin = username === 'admin1drillco' || username === 'admin2drillco';
-      const isObsoleteUser = username === 'admin1' || username === 'admin2' || username === 'admin';
-
-      if (isObsoleteUser || (!isValidAdmin && (profile.email?.includes('admin1@') || profile.email?.includes('admin2@')))) {
-        await this.logout();
+      // Si NO hay credenciales completas guardadas (sesiones antiguas obsoletas o datos residuales):
+      if (!sessionUser || !sessionPass) {
+        console.warn('[AuthService] No se encontraron credenciales de sesión activas. Purgando almacenamiento local...');
+        await this.purgeAllStoredData();
         return null;
       }
 
-      if (isValidAdmin) {
+      const cleanUser = sessionUser.trim().toLowerCase();
+      const cleanPass = sessionPass.trim();
+
+      // Rechazar de inmediato cualquier sesión antigua admin1/admin2/admin
+      if (cleanUser === 'admin1' || cleanUser === 'admin2' || cleanUser === 'admin') {
+        console.warn(`[AuthService] Sesión obsoleta detectada ("${cleanUser}"). Purgando información almacenada...`);
+        await this.purgeAllStoredData();
+        return null;
+      }
+
+      // 2. Comprobar contra las cuentas registradas
+      const isInitialAdmin1 = cleanUser === 'admin1drillco' && cleanPass === 'drillco2026';
+      const isInitialAdmin2 = cleanUser === 'admin2drillco' && cleanPass === 'drillco1387';
+
+      let isValidAccount = isInitialAdmin1 || isInitialAdmin2;
+
+      if (!isValidAccount) {
+        const users = await this.getUsers();
+        const matched = users.find(
+          (u) => u.username.toLowerCase() === cleanUser && u.password === cleanPass
+        );
+        if (matched) {
+          isValidAccount = true;
+        }
+      }
+
+      // SI NO COINCIDE CON NINGUNA CUENTA REGISTRADA: PURGA Y CIERRE TOTAL
+      if (!isValidAccount) {
+        console.warn(`[AuthService] Las credenciales no coinciden con ninguna cuenta registrada. Purgando y forzando logout.`);
+        await this.purgeAllStoredData();
+        return null;
+      }
+
+      // 3. Si coincide, cargar o reconstruir el perfil
+      const currentUserIdState = await db.appState.get('currentUserId');
+      const userId = currentUserIdState?.value || (isInitialAdmin1 ? 'usr-admin-1' : isInitialAdmin2 ? 'usr-admin-2' : `usr-${cleanUser}`);
+
+      let profile: UserProfile | null = null;
+      const cached = await db.cachedUserProfile.get(userId);
+
+      if (cached && cached.profile) {
+        profile = cached.profile;
+      } else {
+        const roles: RoleCode[] = (isInitialAdmin1 || isInitialAdmin2)
+          ? ['admin', 'supervisor', 'operator']
+          : ['operator'];
+
+        profile = {
+          id: userId,
+          organizationId: 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+          firstName: isInitialAdmin1 ? 'Administrador 1' : isInitialAdmin2 ? 'Administrador 2' : cleanUser,
+          lastName: '',
+          email: `${cleanUser}@drillco.com`,
+          roles,
+          siteIds: ['b1eebc99-9c0b-4ef8-bb6d-6bb9bd380a22'],
+        };
+        await db.cachedUserProfile.put({ userId, profile });
+      }
+
+      if (isInitialAdmin1 || isInitialAdmin2) {
         profile.roles = ['admin', 'supervisor', 'operator'];
-        profile.email = `${username}@drillco.com`;
-        await db.cachedUserProfile.put({ userId: currentUserIdState.value, profile });
+        profile.email = `${cleanUser}@drillco.com`;
       }
 
       return profile;
     } catch (e) {
-      console.error('[AuthService] Error recuperando usuario:', e);
+      console.error('[AuthService] Error durante la verificación de inicio:', e);
+      await this.purgeAllStoredData();
+      return null;
     }
-
-    return null;
   }
 
-  // Verificación activa en la nube
+  // Verificación activa online: si la cuenta fue eliminada o modificada en Supabase, purgar y expulsar
   static async verifyAccountOnline(): Promise<boolean> {
     try {
-      const currentUserIdState = await db.appState.get('currentUserId');
-      const currentUsernameState = await db.appState.get('currentUsername');
+      let sessionUser = '';
+      let sessionPass = '';
 
-      if (!currentUserIdState?.value) return false;
+      const storedUser = await db.appState.get('sessionUser');
+      const storedPass = await db.appState.get('sessionPassword');
 
-      const currentUsername = (currentUsernameState?.value || '').toLowerCase();
+      if (storedUser?.value && storedPass?.value) {
+        sessionUser = storedUser.value;
+        sessionPass = storedPass.value;
+      } else if (typeof window !== 'undefined') {
+        sessionUser = localStorage.getItem('drillco_session_user') || '';
+        sessionPass = localStorage.getItem('drillco_session_pass') || '';
+      }
 
-      if (currentUsername === 'admin1' || currentUsername === 'admin2' || currentUsername === 'admin') {
-        await this.logout();
+      if (!sessionUser || !sessionPass) {
+        await this.purgeAllStoredData();
         return false;
       }
 
-      if (currentUsername === 'admin1drillco' || currentUsername === 'admin2drillco') {
-        return true;
+      const cleanUser = sessionUser.trim().toLowerCase();
+      const cleanPass = sessionPass.trim();
+
+      if (cleanUser === 'admin1' || cleanUser === 'admin2' || cleanUser === 'admin') {
+        await this.purgeAllStoredData();
+        return false;
       }
 
+      // Validar administradores del sistema
+      if (cleanUser === 'admin1drillco' && cleanPass === 'drillco2026') return true;
+      if (cleanUser === 'admin2drillco' && cleanPass === 'drillco1387') return true;
+
+      // Si hay internet, verificar en tiempo real en Supabase app_users
       if (typeof window !== 'undefined' && navigator.onLine) {
         const { data, error } = await supabase
           .from('app_users')
-          .select('id, username')
-          .or(`id.eq.${currentUserIdState.value},username.eq.${currentUsername}`)
+          .select('id, username, password')
+          .eq('username', cleanUser)
+          .eq('password', cleanPass)
           .limit(1);
 
-        if (!error && data && data.length === 0) {
-          await this.logout();
+        if (!error && (!data || data.length === 0)) {
+          console.warn(`[AuthService] Verificación online fallida para "${cleanUser}". Purgando información local...`);
+          await this.purgeAllStoredData();
           return false;
         }
       }
     } catch {
-      // Mantiene sesión si offline y usuario es válido
+      // Si offline, mantiene sesión si las credenciales coinciden localmente
     }
 
     return true;
@@ -303,12 +407,6 @@ export class AuthService {
 
   // Cerrar sesión
   static async logout(): Promise<void> {
-    try {
-      await db.appState.delete('currentUserId');
-      await db.appState.delete('currentUsername');
-      await db.cachedUserProfile.clear();
-    } catch (e) {
-      console.error('[AuthService] Error cerrando sesión:', e);
-    }
+    await this.purgeAllStoredData();
   }
 }

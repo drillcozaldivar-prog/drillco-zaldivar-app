@@ -9,26 +9,45 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let isMounted = true;
+
     const checkOnlineAccountStatus = async () => {
       if (typeof window !== 'undefined' && navigator.onLine) {
         const isValid = await AuthService.verifyAccountOnline();
-        if (!isValid) {
+        if (!isValid && isMounted) {
           setUser(null);
           if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
-            window.location.href = '/login?reason=account_revoked';
+            window.location.replace('/login');
           }
         }
       }
     };
 
+    // Verificación estricta de credenciales en la apertura de la app
     AuthService.getCurrentUser()
       .then((u) => {
+        if (!isMounted) return;
         setUser(u);
         if (u) {
           checkOnlineAccountStatus();
+        } else {
+          // Si no coincide con ninguna cuenta registrada, forzar salida inmediata
+          if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+            window.location.replace('/login');
+          }
         }
       })
-      .finally(() => setLoading(false));
+      .catch(async () => {
+        if (!isMounted) return;
+        setUser(null);
+        await AuthService.purgeAllStoredData();
+        if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+          window.location.replace('/login');
+        }
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
 
     // Revisión periódica activa en segundo plano (cada 15 segundos) al estar Online
     const interval = setInterval(() => {
@@ -46,6 +65,7 @@ export function useAuth() {
     }
 
     return () => {
+      isMounted = false;
       clearInterval(interval);
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', handleOnline);
@@ -67,6 +87,9 @@ export function useAuth() {
   const logout = async () => {
     await AuthService.logout();
     setUser(null);
+    if (typeof window !== 'undefined') {
+      window.location.replace('/login');
+    }
   };
 
   const hasRole = (roleName: string): boolean => {
